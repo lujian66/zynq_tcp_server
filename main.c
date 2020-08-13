@@ -42,62 +42,88 @@
 #include "xil_printf.h"
 #endif
 
+#include "xgpiops.h"
 #include "lwip/tcp.h"
-#include "lwipopts.h"
 #include "xil_cache.h"
-#define MAX_FLASH_LEN 4*1024*1024 //4MB
-/* defined by each RAW mode application */
+#include "qspi_ctrl/qspi.h"
+
+/*******************this is for soft reset**************************/
+#define PS_RST_MASK			0x1	/**< PS software reset */
+#define PS_RST_CTRL_REG			(XPS_SYS_CTRL_BASEADDR + 0x200)
+#define SlcrUnlock()	Xil_Out32(XPS_SYS_CTRL_BASEADDR + 0x08, 0xDF0DDF0D)
+#define SlcrLock()		Xil_Out32(XPS_SYS_CTRL_BASEADDR + 0x04, 0x767B767B)
+/******************************************************************/
+
+/*******************this is for GPIO LED***************************/
+#define MIO_0_ID XPAR_PS7_GPIO_0_DEVICE_ID
+#define GPIO_OUTPUT     1
+#define GPIO_LED     0 //0 or 13
 #define true 1
 #define false 0
+/******************************************************************/
 
+/**************defined by each RAW mode application*****************/
 void print_app_header();
 int start_tcp_application();
 int transfer_data();
 void tcp_fasttmr(void);
 void tcp_slowtmr(void);
-void lwip_init();
-int send_data( int length , char * Send_Buffer );
+/******************************************************************/
+
+/*************************user defined variable********************/
+XGpioPs GPIO_instrance ;
+XGpioPs_Config *GPIO_CONFIG_Ptr=NULL ;
+static int echo_back = 0 ;
+static int start_send_to_flash = 0 ;
+static int start_soft_reset = 0 ;
+static int ReceivedCount = 0 ;
+static struct tcp_pcb *tcp_pcb_connected = NULL;
+char FlashRxBuffer[MAX_FLASH_LEN] ;
+extern XQspiPs QspiInstance;
+/******************************************************************/
+
+/*************************user defined function********************/
 err_t accept_callback(void *arg, struct tcp_pcb *newpcb, err_t err);
 err_t recv_callback(void *arg, struct tcp_pcb *tpcb,struct pbuf *p, err_t err);
 int send_data_v2( int length , char * Send_Buffer );
+/******************************************************************/
 
-/*user defined*/
-char FlashRxBuffer[MAX_FLASH_LEN] ;
-int recevied_flag = 0 ;
-static struct tcp_pcb *tcp_pcb_connected = NULL;
-
-/*this is flag for transfer*/
-static int echo_back = 0 ;
-static int start_update = 0 ;
-static int ReceivedCount = 0 ;
-//int send_data(struct pbuf* p);
-/* missing declaration in lwIP */
-
-
+/*********************missing declaration in lwIP*****************/
+void lwip_init();
 extern volatile int TcpFastTmrFlag;
 extern volatile int TcpSlowTmrFlag;
 static struct netif server_netif;
 struct netif *echo_netif;
+/******************************************************************/
 
-void
-print_ip(char *msg, struct ip_addr *ip) 
-{
+void print_ip(char *msg, struct ip_addr *ip){
 	print(msg);
 	xil_printf("%d.%d.%d.%d\n\r", ip4_addr1(ip), ip4_addr2(ip), 
 			ip4_addr3(ip), ip4_addr4(ip));
 }
 
-void
-print_ip_settings(struct ip_addr *ip, struct ip_addr *mask, struct ip_addr *gw)
-{
-
+void print_ip_settings(struct ip_addr *ip, struct ip_addr *mask, struct ip_addr *gw){
 	print_ip("Board IP: ", ip);
 	print_ip("Netmask : ", mask);
 	print_ip("Gateway : ", gw);
 }
 
-int main()
-{
+void led_brink(int MIO_DID){
+	GPIO_CONFIG_Ptr = XGpioPs_LookupConfig(MIO_DID) ;
+	XGpioPs_CfgInitialize(&GPIO_instrance, GPIO_CONFIG_Ptr, GPIO_CONFIG_Ptr->BaseAddr) ;
+	XGpioPs_SetDirectionPin(&GPIO_instrance, GPIO_LED, GPIO_OUTPUT) ;
+	XGpioPs_SetOutputEnablePin(&GPIO_instrance, GPIO_LED, GPIO_OUTPUT) ;
+
+	for(int i=0 ;i<5;i++){
+		XGpioPs_WritePin(&GPIO_instrance, GPIO_LED, 1) ;
+		sleep(1) ;
+		XGpioPs_WritePin(&GPIO_instrance, GPIO_LED, 0) ;
+		sleep(1) ;
+	}
+}
+
+int main(){
+	led_brink(MIO_0_ID);
 	struct ip_addr ipaddr, netmask, gw;
 
 	/* the mac address of the board. this should be unique per board */
@@ -138,6 +164,7 @@ int main()
 
 	/* receive and process packets */
 	while (1) {
+
 		if (TcpFastTmrFlag) {
 			tcp_fasttmr();
 			TcpFastTmrFlag = 0;
@@ -147,42 +174,35 @@ int main()
 			TcpSlowTmrFlag = 0;
 		}
 		xemacif_input(echo_netif);
-		if (start_update == 1){
-			start_update = 0 ;
-			ReceivedCount = 0 ;
-			/*
+		if (start_send_to_flash == 1 ){
+			//start_send_to_flash = 0 ;
+			//ReceivedCount = 0 ;
 			int Status;
 			Status = update_qspi(&QspiInstance, QSPI_DEVICE_ID, ReceivedCount, FlashRxBuffer) ;
 			if (Status != XST_SUCCESS)
 				xil_printf("Write Flash Error!\r\n") ;
 			else{
-				StartUpdate = 0 ;
+				start_send_to_flash = 0 ;
 				ReceivedCount = 0;
 			}
-			*/
-		}else if(echo_back == 1){
+		}else if (echo_back == 1){
 			echo_back = 0 ;
 			//send_data(ReceivedCount, &FlashRxBuffer[0]);
 			send_data_v2(ReceivedCount, &FlashRxBuffer[0]);
 			ReceivedCount = 0 ;
-			/*
-			if (ReceivedCount > 16384){
-				send_data(16384, &FlashRxBuffer[send_again*16384]);
-				send_again = send_again + 1 ;
-				echo_back = 1 ;
-			}else{
-				send_data(ReceivedCount, &FlashRxBuffer[0]);
-			}
-			*/
+
+		}else if( start_soft_reset == 1){
+			start_soft_reset = 0;
+			//unlock the system reg
+			SlcrUnlock();
+			//write the reset signal to software reset reg
+			Xil_Out32(PS_RST_CTRL_REG, PS_RST_MASK);
 		}else{
-			//waiting for recevied data!
+
 		}
 	}
-
-  
 	/* never reached */
 	cleanup_platform();
-
 	return 0;
 }
 
@@ -231,11 +251,9 @@ int start_tcp_application(){
 	xil_printf("TCP server app started @ port %d\n\r", port);
 
 	return 0;
-
 }
 
-err_t accept_callback(void *arg, struct tcp_pcb *newpcb, err_t err)
-{
+err_t accept_callback(void *arg, struct tcp_pcb *newpcb, err_t err){
 	static int connection = 1;
 
 	/* set the receive callback for this connection */
@@ -251,8 +269,7 @@ err_t accept_callback(void *arg, struct tcp_pcb *newpcb, err_t err)
 	return ERR_OK;
 }
 
-err_t recv_callback(void *arg, struct tcp_pcb *tpcb, \
-		struct pbuf *p, err_t err){
+err_t recv_callback(void *arg, struct tcp_pcb *tpcb, struct pbuf *p, err_t err){
 	//recevied data pointer
 	char *pData;
 	/* do not read the packet if we are not in ESTABLISHED state */
@@ -267,99 +284,18 @@ err_t recv_callback(void *arg, struct tcp_pcb *tpcb, \
 
 	if ( tcp_len == 9 && !(memcmp("echo_back", p->payload, 9)) ){
 		echo_back = 1 ;
-	}else if ( tcp_len == 12 && !(memcmp("start_update", p->payload, 12)) ){
-		start_update = 1 ;
+	}else if ( tcp_len == 13 && !(memcmp("send_to_flash", p->payload, 13)) ){
+		start_send_to_flash = 1 ;
+	}else if ( tcp_len == 16 && !(memcmp("start_soft_reset", p->payload, 16)) ){
+		start_soft_reset = 1 ;
 	}else{
 		memcpy(&FlashRxBuffer[ReceivedCount], pData, tcp_len);
 		ReceivedCount += tcp_len ;
 		xil_printf("ReceivedCount bytes is %d \r\n", ReceivedCount);
 	}
-	
 	tcp_pcb_connected = tpcb ;
 	pbuf_free(p);
 	return ERR_OK;
-}
-
-int send_data( int length , char * Send_Buffer ){
-	err_t err;
-
-	struct tcp_pcb * send_pcb;
-	send_pcb = tcp_pcb_connected ;
-	if (!send_pcb)
-		return -1;
-
-	//struct pbuf* p_head , p, q ;
-	//q = pbuf_alloc(PBUF_TRANSPORT, 1024, PBUF_POOL);
-	struct pbuf*  p;
-	int send_count = length / 1024 + 1 ;
-	for (int i = 0 ; i < send_count; ++i){
-		if(i == send_count-1){
-			p = pbuf_alloc(PBUF_TRANSPORT, length - i*1024, PBUF_POOL);
-			memcpy(p->payload, &Send_Buffer[i*1024], length - i*1024);
-			xil_printf("avaiable_snd_buf size is : %d\r\n", tcp_sndbuf(send_pcb) );
-			err = tcp_write(send_pcb, p->payload, length - i*1024, TCP_WRITE_FLAG_COPY);
-			if (err != ERR_OK) {
-				xil_printf("txperf: Error on tcp_write: %d\r\n", err);
-				send_pcb = NULL;
-				return -1;
-			}
-		}else{
-			p = pbuf_alloc(PBUF_TRANSPORT, 1024, PBUF_POOL);
-			memcpy(p->payload, &Send_Buffer[i*1024], 1024);
-			
-			xil_printf("avaiable_snd_buf size is : %d\r\n", tcp_sndbuf(send_pcb) );
-
-			err = tcp_write(send_pcb, p->payload, 1024, TCP_WRITE_FLAG_COPY);
-			if (err != ERR_OK) {
-				xil_printf("txperf: Error on tcp_write: %d\r\n", err);
-				send_pcb = NULL;
-				return -1;
-			}
-		}
-		err = tcp_output(send_pcb);
-		if (err != ERR_OK) {
-			xil_printf("txperf: Error on tcp_output: %d\r\n",err);
-			return -1;
-		}
-		pbuf_free(p);
-	}
-	xil_printf("func into send_data: \r\n");
-	return -1;
-	
-	/*
-	p = pbuf_alloc(PBUF_TRANSPORT, length, PBUF_POOL);
-	if (!p) {
-		xil_printf("pbuf_alloc %d fail\n\r", length);
-		return -3;
-	}
-	memcpy(p->payload, Send_Buffer, length);
-	//err = tcp_write(tpcb_send, p->payload, p->len, 3);
-	//*
-	if (tcp_sndbuf(tpcb) > p->len) {
-		xil_printf("error in tcp_sndbuf: \r\n");
-		return -1;
-		}
-	 
-
-	//err = tcp_write(tpcb, Send_Buffer, length, TCP_WRITE_FLAG_COPY);
-	//err = tcp_write(send_pcb, p->payload, p->len, TCP_WRITE_FLAG_COPY);
-	err = tcp_write(send_pcb, p->payload, length, TCP_WRITE_FLAG_COPY);
-	if (err != ERR_OK) {
-		xil_printf("txperf: Error on tcp_write: %d\r\n", err);
-		send_pcb = NULL;
-		return -1;
-	}
-	
-	err = tcp_output(send_pcb);
-	if (err != ERR_OK) {
-		xil_printf("txperf: Error on tcp_output: %d\r\n",err);
-		return -1;
-	}
-	pbuf_free(p);
-	xil_printf("func into send_data: \r\n");
-
-	return -1;
-	*/
 }
 
 int send_data_v2( int length , char * Send_Buffer ){
