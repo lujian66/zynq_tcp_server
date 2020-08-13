@@ -1,0 +1,12 @@
+#In this file we add some sdk command for improving the efficenty of work.
+
+
+//TO geneate the .bin file from the sdk
+//the parameter and options can be seen from
+//https://www.xilinx.com/support/documentation/sw_manuals/xilinx2020_1/ug1283-bootgen-user-guide.pdf
+//but firstly you should write a bif file
+bootgen -image .\bootimage_fsbl_1\output.bif -arch zynq -o .\bootimage_fsbl_1\BOOT.bin -w on
+
+//TO program flash using the bin file at the page 53 in 
+//https://www.xilinx.com/support/documentation/sw_manuals/xilinx2020_1/ug1043-embedded-system-tools.pdf
+program_flash -f .\bootimage_fsbl_2\BOOT.bin -offset 0 -flash_type qspi_single -fsbl .\..\..\zynq_fsbl_flash.elf -verify -cable type xilinx_tcf url TCP:127.0.0.1:3121 
