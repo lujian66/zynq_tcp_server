@@ -9,4 +9,17 @@ bootgen -image .\bootimage_fsbl_1\output.bif -arch zynq -o .\bootimage_fsbl_1\BO
 
 //TO program flash using the bin file at the page 53 in 
 //https://www.xilinx.com/support/documentation/sw_manuals/xilinx2020_1/ug1043-embedded-system-tools.pdf
-program_flash -f .\bootimage_fsbl_2\BOOT.bin -offset 0 -flash_type qspi_single -fsbl .\..\..\zynq_fsbl_flash.elf -verify -cable type xilinx_tcf url TCP:127.0.0.1:3121 
+program_flash -f .\bootimage_fsbl_2\BOOT.bin -offset 0x0 -flash_type qspi_single -fsbl .\..\..\zynq_fsbl_flash.elf -verify -cable type xilinx_tcf url TCP:127.0.0.1:3121
+
+//Using the python to write the verilog code, you can see from the website
+http://docs.myhdl.org/en/stable/manual/index.html
+
+//to review the wave of .vcd file geneated from the vivado ila
+you can using the gtkwave  
+http://gtkwave.sourceforge.net/
+to exec the command in cmd
+gtkwave.ext your_vcd_file_path.vcd
+
+//to examine the verilog synnax
+using the iverilog
+http://iverilog.icarus.com/ 
